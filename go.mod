@@ -1,4 +1,4 @@
-module github.com/pr8kerl/f5er
+module github.com/txst-sysops/f5er
 
 go 1.13
 

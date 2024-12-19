@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/jmcvetta/napping"
-	"github.com/pr8kerl/f5er/f5"
+	"github.com/txst-sysops/f5er/f5"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -135,6 +135,7 @@ func init() {
 	showCmd.AddCommand(showStackCmd)
 	showCmd.AddCommand(showCertCmd)
 	showCmd.AddCommand(showCertsCmd)
+	showCmd.AddCommand(showSysCmd)
 
 	// add
 	f5Cmd.AddCommand(addCmd)

@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 
-	"github.com/pr8kerl/f5er/f5"
+	"github.com/txst-sysops/f5er/f5"
 	"github.com/spf13/cobra"
 )
 
@@ -1341,6 +1342,46 @@ var runCmd = &cobra.Command{
 		fmt.Println(res.CommandResult)
 	},
 }
+
+var showSysCmd = &cobra.Command{
+	Use:   "sys",
+	Short: "show sys data",
+	Long:  "show the details of system",
+	Run: func(cmd *cobra.Command, args []string) {
+		err, res := appliance.ShowCPUStats()
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, sockets := range res.Sockets {
+
+			for _, cores := range sockets.Cores {
+
+				t := reflect.TypeOf(cores)
+				val := reflect.ValueOf(cores)
+
+				for i := 0; i < t.NumField(); i++ {
+					field := t.Field(i)
+					value := val.Field(i)
+					fmt.Printf("  %s: %v\n", field.Name, value)
+				}
+				fmt.Printf("\n")
+			}
+		}
+		/*
+		if len(args) < 1 {
+			...
+		} else {
+			name := args[0]
+			err, res := appliance.Show(name)
+			if err != nil {
+				log.Fatal(err)
+			}
+			appliance.PrintObject(res)
+		}
+		*/
+	},
+}
+
 
 func show() {
 

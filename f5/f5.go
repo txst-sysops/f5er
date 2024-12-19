@@ -285,15 +285,31 @@ type LBModules struct {
 
 func (f *Device) ShowModules() (error, *LBModules) {
 
-	u := f.Proto + "://" + f.Hostname + "/mgmt/tm/ltm"
-	res := LBModules{}
+	ltmUrl := f.Proto + "://" + f.Hostname + "/mgmt/tm/ltm"
+	sysUrl := f.Proto + "://" + f.Hostname + "/mgmt/tm/sys"
 
-	err, _ := f.sendRequest(u, GET, nil, &res)
-	if err != nil {
-		return err, nil
-	} else {
-		return nil, &res
-	}
+    // Containers for responses
+    ltmResponse := LBModules{}
+    sysResponse := LBModules{} // Assuming /mgmt/tm/sys has the same format
+
+    // First request to /mgmt/tm/ltm
+    err, _ := f.sendRequest(ltmUrl, GET, nil, &ltmResponse)
+    if err != nil {
+        return err, nil
+    }
+
+    // Second request to /mgmt/tm/sys
+    err, _ = f.sendRequest(sysUrl, GET, nil, &sysResponse)
+    if err != nil {
+        return err, nil
+    }
+
+    // Combine the results into one array
+    combinedItems := append(ltmResponse.Items, sysResponse.Items...)
+
+    // Return the combined result
+    return nil, &LBModules{Items: combinedItems}
+
 }
 
 func (f *Device) GetToken() {
