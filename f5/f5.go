@@ -1,16 +1,13 @@
 package f5
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,12 +16,11 @@ import (
 )
 
 var (
-	// Underlying transports/clients
+	//sessn   napping.Session
 	tsport            http.Transport
-	hsport            http.Transport
 	clnt              http.Client
 	headers           http.Header
-	debug             bool // kept for API compatibility, but not used for logging
+	debug             bool
 	tokenMutex        = sync.Mutex{}
 	stats_path_prefix string
 )
@@ -89,127 +85,6 @@ type authToken struct {
 	ExpirationMicros int64
 }
 
-// ---------- logging transport ------------------------------------------------
-
-type LoggingTransport struct {
-	Base http.RoundTripper
-}
-
-func (lt *LoggingTransport) base() http.RoundTripper {
-	if lt.Base != nil {
-		return lt.Base
-	}
-	return http.DefaultTransport
-}
-
-func (lt *LoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	start := time.Now()
-
-	// Clone body for logging + restore for downstream
-	var reqBody []byte
-	if req.Body != nil {
-		var err error
-		reqBody, err = io.ReadAll(req.Body)
-		if err != nil {
-			log.Printf("[HTTP] ERROR reading request body: %v", err)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(reqBody))
-	}
-
-	log.Printf("[HTTP] --> %s %s", req.Method, req.URL.String())
-	logHeaders("Request", req.Header)
-	if len(reqBody) > 0 {
-		logBody("Request", req.Header.Get("Content-Type"), reqBody)
-	} else {
-		log.Printf("[HTTP]     (no request body)")
-	}
-
-	resp, err := lt.base().RoundTrip(req)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		log.Printf("[HTTP] !!  ERROR %s %s after %s: %v", req.Method, req.URL.String(), elapsed, err)
-		return nil, err
-	}
-
-	// Read/clone response body for logging
-	var respBody []byte
-	if resp.Body != nil {
-		var rerr error
-		respBody, rerr = io.ReadAll(resp.Body)
-		if rerr != nil {
-			log.Printf("[HTTP] ERROR reading response body: %v", rerr)
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-	}
-
-	log.Printf("[HTTP] <-- %s %s %d (%s)", req.Method, req.URL.String(), resp.StatusCode, elapsed)
-	if resp.TLS != nil {
-		cs := resp.TLS
-		log.Printf("[HTTP]     TLS: vers=%x cipher=%x proto=%s resumed=%v",
-			cs.Version, cs.CipherSuite, cs.NegotiatedProtocol, cs.DidResume)
-	}
-	logHeaders("Response", resp.Header)
-	if len(respBody) > 0 {
-		ct := resp.Header.Get("Content-Type")
-		logBody("Response", ct, respBody)
-	} else {
-		log.Printf("[HTTP]     (no response body)")
-	}
-
-	return resp, nil
-}
-
-func logHeaders(prefix string, h http.Header) {
-	// Sort keys for stable output
-	keys := make([]string, 0, len(h))
-	for k := range h {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		vs := h.Values(k)
-		log.Printf("[HTTP]     %s-H %s: %s", prefix, k, strings.Join(vs, ", "))
-	}
-}
-
-func logBody(prefix, contentType string, b []byte) {
-	if isLikelyJSON(contentType, b) {
-		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, b, "", "  "); err == nil {
-			log.Printf("[HTTP]     %s-Body (JSON):\n%s", prefix, pretty.String())
-			return
-		}
-	}
-	// Fallback: raw text (trim very long bodies to keep logs manageable)
-	const max = 1 << 20 // 1 MiB cap
-	if len(b) > max {
-		log.Printf("[HTTP]     %s-Body (%s, %d bytes, truncated to %d):\n%s",
-			prefix, printableCT(contentType), len(b), max, string(b[:max]))
-	} else {
-		log.Printf("[HTTP]     %s-Body (%s, %d bytes):\n%s",
-			prefix, printableCT(contentType), len(b), string(b))
-	}
-}
-
-func isLikelyJSON(ct string, b []byte) bool {
-	ct = strings.ToLower(ct)
-	if strings.Contains(ct, "application/json") || strings.Contains(ct, "application/vnd") {
-		return true
-	}
-	trim := bytes.TrimSpace(b)
-	return len(trim) > 0 && (trim[0] == '{' || trim[0] == '[')
-}
-
-func printableCT(ct string) string {
-	if ct == "" {
-		return "unknown"
-	}
-	return ct
-}
-
-// ---------- public API -------------------------------------------------------
-
 func New(host string, username string, pwd string, authMethod AuthMethod) *Device {
 	f := Device{Hostname: host, Username: username, Password: pwd, AuthMethod: authMethod, Proto: "https", StatsPathPrefix: "f5.", StatsShowZeroes: false}
 	f.InitSession()
@@ -223,33 +98,34 @@ func NewInsecure(host string, username string, pwd string, authMethod AuthMethod
 }
 
 func (f *Device) InitSession() {
+
 	// REST connection setup
 	if f.Proto == "https" {
 		tsport = http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			Proxy:           http.ProxyFromEnvironment,
 		}
-		clnt = http.Client{Transport: &LoggingTransport{Base: &tsport}}
+		clnt = http.Client{Transport: &tsport}
 	} else {
-		hsport = http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-		}
-		clnt = http.Client{Transport: &LoggingTransport{Base: &hsport}}
+		clnt = http.Client{}
 	}
 	headers = make(http.Header)
 
-	// Setup HTTP Basic auth for this session (ONLY use this with SSL). Auth can
-	// also be configured per-request when using Send().
+	//
+	// Setup HTTP Basic auth for this session (ONLY use this with SSL).  Auth
+	// can also be configured on a per-request basis when using Send().
+	//
 	f.Session = napping.Session{
-		Client:   &clnt,
-		Log:      false, // transport handles all logging unconditionally
+		Client: &clnt,
+		Log:    debug,
+		// if Userinfo is set - napping will set the basic auth header for you
 		Userinfo: url.UserPassword(f.Username, f.Password),
 		Header:   &headers,
 	}
+
 }
 
 func (f *Device) SetDebug(b bool) {
-	// Kept for compatibility; no longer controls logging
 	debug = b
 }
 
@@ -272,12 +148,14 @@ func (f *Device) SetStatsPathPrefix(p string) {
 	} else {
 		f.StatsPathPrefix = p + "."
 	}
+
 }
 func (f *Device) SetStatsShowZeroes(b bool) {
 	f.StatsShowZeroes = b
 }
 
 func (f *Device) StartTransaction() (error, string) {
+
 	u := f.Proto + "://" + f.Hostname + "/mgmt/tm/transaction"
 	empty := LBEmptyBody{}
 	tres := LBTransaction{}
@@ -290,9 +168,11 @@ func (f *Device) StartTransaction() (error, string) {
 	// set the transaction header
 	f.Session.Header.Set("X-F5-REST-Coordination-Id", tid)
 	return nil, tid
+
 }
 
 func (f *Device) CommitTransaction(tid string) error {
+
 	// remove the transaction header first
 	f.Session.Header.Del("X-F5-REST-Coordination-Id")
 
@@ -303,20 +183,26 @@ func (f *Device) CommitTransaction(tid string) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
+
 }
 
 func (f *Device) sendRequest(u string, method int, pload interface{}, res interface{}) (error, *Response) {
+
 	if f.AuthMethod == TOKEN {
 		f.ensureValidToken()
 	}
 
-	// Send request
+	//
+	// Send request to server
+	//
 	e := httperr{}
 	var (
 		err   error
 		nresp *napping.Response
 	)
+	f.Session.Log = debug
 
 	switch method {
 	case GET:
@@ -367,17 +253,20 @@ func (f *Device) sendRequest(u string, method int, pload interface{}, res interf
 	}
 	if nresp.Status() >= 300 {
 		return errors.New(e.Message), &resp
+	} else {
+		// all is good in the world
+		return nil, &resp
 	}
-	// all is good
-	return nil, &resp
 }
 
 func (f *Device) PrintObject(input interface{}) {
+
 	jsonresp, err := json.MarshalIndent(&input, "", "\t")
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println(string(jsonresp))
+
 }
 
 // F5 Module data struct
@@ -395,33 +284,36 @@ type LBModules struct {
 }
 
 func (f *Device) ShowModules() (error, *LBModules) {
+
 	ltmUrl := f.Proto + "://" + f.Hostname + "/mgmt/tm/ltm"
 	sysUrl := f.Proto + "://" + f.Hostname + "/mgmt/tm/sys"
 
-	// Containers for responses
-	ltmResponse := LBModules{}
-	sysResponse := LBModules{} // Assuming /mgmt/tm/sys has the same format
+    // Containers for responses
+    ltmResponse := LBModules{}
+    sysResponse := LBModules{} // Assuming /mgmt/tm/sys has the same format
 
-	// First request to /mgmt/tm/ltm
-	err, _ := f.sendRequest(ltmUrl, GET, nil, &ltmResponse)
-	if err != nil {
-		return err, nil
-	}
+    // First request to /mgmt/tm/ltm
+    err, _ := f.sendRequest(ltmUrl, GET, nil, &ltmResponse)
+    if err != nil {
+        return err, nil
+    }
 
-	// Second request to /mgmt/tm/sys
-	err, _ = f.sendRequest(sysUrl, GET, nil, &sysResponse)
-	if err != nil {
-		return err, nil
-	}
+    // Second request to /mgmt/tm/sys
+    err, _ = f.sendRequest(sysUrl, GET, nil, &sysResponse)
+    if err != nil {
+        return err, nil
+    }
 
-	// Combine the results into one array
-	combinedItems := append(ltmResponse.Items, sysResponse.Items...)
+    // Combine the results into one array
+    combinedItems := append(ltmResponse.Items, sysResponse.Items...)
 
-	// Return the combined result
-	return nil, &LBModules{Items: combinedItems}
+    // Return the combined result
+    return nil, &LBModules{Items: combinedItems}
+
 }
 
 func (f *Device) GetToken() {
+
 	type login struct {
 		Token struct {
 			Token            string `json:"token"`
@@ -440,6 +332,9 @@ func (f *Device) GetToken() {
 	if err != nil {
 		log.Fatal(fmt.Errorf("error: %s, %v", err, resp))
 		return
+	}
+	if debug {
+		f.PrintObject(&resp)
 	}
 
 	f.AuthToken = authToken{
